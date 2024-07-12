@@ -59,11 +59,7 @@ public class RewardsService {
 				}
 			}
 		}
-		System.out.println("this is how many time we added something : " + y);
-		System.out.println("this is the size of the list : " + visited.size());
 		for (int i = 0; i < visited.size(); i++) {
-			System.out.println("attradtion : " + attac.get(i).attractionName);
-			System.out.println("location : " + visited.get(i));
 			user.addUserReward(new UserReward(visited.get(i), attac.get(i),
 					getRewardPoints(attac.get(i), user)));
 		}

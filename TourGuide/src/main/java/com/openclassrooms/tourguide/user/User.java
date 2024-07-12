@@ -72,9 +72,8 @@ public class User {
 
 	public void addUserReward(UserReward userReward) {
 		if (userRewards.stream().filter(
-				r -> !r.attraction.attractionName.equals(userReward.attraction.attractionName))
+				r -> r.attraction.attractionName.equals(userReward.attraction.attractionName))
 				.count() == 0) {
-			System.out.println("un de plus ");
 			userRewards.add(userReward);
 		}
 	}
