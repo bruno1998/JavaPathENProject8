@@ -1,10 +1,19 @@
 package com.openclassrooms.tourguide.service;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.springframework.stereotype.Service;
 
 import gpsUtil.GpsUtil;
@@ -40,29 +49,53 @@ public class RewardsService {
 	}
 
 	public void calculateRewards(User user) {
-		List<VisitedLocation> userLocations = user.getVisitedLocations();
-		List<Attraction> attractions = gpsUtil.getAttractions();
+		List<VisitedLocation> userLocations =
+				new CopyOnWriteArrayList<>(user.getVisitedLocations());
+		List<Attraction> attractions = new CopyOnWriteArrayList<>(gpsUtil.getAttractions());
+		List<UserReward> listUserReward = new CopyOnWriteArrayList<>(user.getUserRewards());
 
-		List<VisitedLocation> visited = new ArrayList<>();
-		List<Attraction> attac = new ArrayList<>();
-		int y = 0;
-		for (VisitedLocation visitedLocation : userLocations) {
-			for (Attraction attraction : attractions) {
-				if (user.getUserRewards().stream()
-						.filter(r -> r.attraction.attractionName.equals(attraction.attractionName))
-						.count() == 0) {
-					if (nearAttraction(visitedLocation, attraction)) {
-						y++;
-						visited.add(visitedLocation);
-						attac.add(attraction);
-					}
-				}
-			}
-		}
-		for (int i = 0; i < visited.size(); i++) {
-			user.addUserReward(new UserReward(visited.get(i), attac.get(i),
-					getRewardPoints(attac.get(i), user)));
-		}
+		List<Pair<VisitedLocation, Attraction>> locationAttractionPairs =
+				userLocations.parallelStream()
+						.flatMap(visitedLocation -> attractions.parallelStream()
+								.filter(attraction -> listUserReward.parallelStream()
+										.noneMatch(reward -> reward.attraction.attractionName
+												.equals(attraction.attractionName)))
+								.filter(attraction -> nearAttraction(visitedLocation, attraction))
+								.map(attraction -> new Pair<>(visitedLocation, attraction)))
+						.collect(Collectors.toList());
+
+		List<VisitedLocation> visited =
+				locationAttractionPairs.stream().map(Pair::getFirst).collect(Collectors.toList());
+
+		List<Attraction> attac =
+				locationAttractionPairs.stream().map(Pair::getSecond).collect(Collectors.toList());
+
+		ExecutorService executorService = Executors.newFixedThreadPool(1000);
+
+		List<CompletableFuture<Void>> futures =
+				IntStream.range(0, visited.size())
+						.mapToObj(i -> CompletableFuture.supplyAsync(
+								() -> rewardsCentral.getAttractionRewardPoints(
+										attac.get(i).attractionId, user.getUserId()),
+								executorService).thenAccept(rewardPoints -> {
+									user.addUserReward(new UserReward(visited.get(i), attac.get(i),
+											rewardPoints));
+								}).exceptionally(ex -> {
+									ex.printStackTrace();
+									return null;
+								}))
+						.toList();
+
+		// List<CompletableFuture<Void>> futures = IntStream.range(0, visited.size())
+		// .mapToObj(i -> getRewardPoints(attac.get(i), user).thenAccept(rewardPoints -> {
+		// user.addUserReward(new UserReward(visited.get(i), attac.get(i), rewardPoints));
+		// }).exceptionally(ex -> {
+		// ex.printStackTrace();
+		// return null;
+		// })).toList();
+
+		// Wait for all futures to complete
+		CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 	}
 
 	public boolean isWithinAttractionProximity(Attraction attraction, Location location) {
@@ -73,8 +106,9 @@ public class RewardsService {
 		return getDistance(attraction, visitedLocation.location) > proximityBuffer ? false : true;
 	}
 
-	private int getRewardPoints(Attraction attraction, User user) {
-		return rewardsCentral.getAttractionRewardPoints(attraction.attractionId, user.getUserId());
+	public CompletableFuture<Integer> getRewardPoints(Attraction attraction, User user) {
+		return CompletableFuture.supplyAsync(() -> rewardsCentral
+				.getAttractionRewardPoints(attraction.attractionId, user.getUserId()));
 	}
 
 	public double getDistance(Location loc1, Location loc2) {
@@ -91,4 +125,22 @@ public class RewardsService {
 		return statuteMiles;
 	}
 
+
+	private static class Pair<F, S> {
+		private final F first;
+		private final S second;
+
+		public Pair(F first, S second) {
+			this.first = first;
+			this.second = second;
+		}
+
+		public F getFirst() {
+			return first;
+		}
+
+		public S getSecond() {
+			return second;
+		}
+	}
 }
